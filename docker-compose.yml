@@ -9,7 +9,7 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD:-taskpass}
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpass}
     ports:
-      - "3306:3306"
+      - "3309:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:

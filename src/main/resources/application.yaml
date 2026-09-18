@@ -3,7 +3,7 @@ spring:
     name: recutement-test
 
   datasource:
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:taskmanager}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&createDatabaseIfNotExist=true
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3309}/${DB_NAME:taskmanager}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&createDatabaseIfNotExist=true
     username: ${DB_USER:taskuser}
     password: ${DB_PASSWORD:taskpass}
     driver-class-name: com.mysql.cj.jdbc.Driver

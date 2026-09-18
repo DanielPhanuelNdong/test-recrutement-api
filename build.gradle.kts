@@ -44,6 +44,7 @@ dependencies {
 	developmentOnly("org.springframework.boot:spring-boot-devtools")
 
 	runtimeOnly("com.mysql:mysql-connector-j")
+	runtimeOnly("com.google.cloud.sql:mysql-socket-factory-connector-j-8:1.30.0")
 	runtimeOnly("com.h2database:h2")
 
 	testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")

@@ -12,6 +12,7 @@ API REST pour une mini application de gestion de tâches, réalisée dans le cad
 - [Lancer avec Docker](#lancer-avec-docker)
 - [Tests](#tests)
 - [Documentation interactive (Swagger)](#documentation-interactive-swagger)
+- [CI/CD (GitHub Actions → GCP Cloud Run)](#cicd-github-actions--gcp-cloud-run)
 
 ## Architecture
 
@@ -30,6 +31,7 @@ recutement-test/
 ├── src/test/java/...      # Tests d'intégration MockMvc (flux complet + cas d'erreur)
 ├── Dockerfile              # Build multi-stage (Gradle -> JRE)
 ├── docker-compose.yml       # MySQL + backend pour un environnement local complet
+├── .github/workflows/ci-cd.yml  # CI/CD GitHub Actions -> Artifact Registry -> Cloud Run
 └── build.gradle.kts
 ```
 
@@ -152,8 +154,121 @@ La documentation est volontairement détaillée :
 - Chaque champ de DTO a une description et un exemple (`@Schema`), utilisés pour pré-remplir les requêtes d'exemple dans Swagger UI.
 - Le cadenas d'authentification n'apparaît que sur les endpoints `/api/tasks/**` : les endpoints `/api/auth/**` restent visiblement publics.
 
+## CI/CD (GitHub Actions → GCP Cloud Run)
+
+> 📘 Vous découvrez GCP ? **[`PLAN-GCP.pdf`](./PLAN-GCP.pdf)** (à la racine du dépôt) explique en détail chaque concept mobilisé ici — hiérarchie des ressources, IAM, Cloud Run, Artifact Registry, Secret Manager, connexion à MySQL — en partant de zéro et en le reliant précisément aux commandes et aux jobs ci-dessous.
+
+Le pipeline (`.github/workflows/ci-cd.yml`) reprend le découpage en étapes d'un `.gitlab-ci.yml` classique, transposé en jobs GitHub Actions :
+
+| Job | Équivalent GitLab CI | Déclenchement | Rôle |
+|---|---|---|---|
+| `build` | `build_project` (stage `build`) | push + pull request | `./gradlew assemble`, jar publié en artifact |
+| `test` | `run_tests` (stage `test`) | push + pull request | `./gradlew test`, rapport JUnit publié sur le job |
+| `package` | `package` (stage `package`) | push sur `main` uniquement | Build de l'image Docker (`Dockerfile` multi-stage) et push vers Artifact Registry |
+| `deploy` | `deploy` (stage `deploy`, SSH + `docker compose`) | push sur `main` uniquement, après `package` | Déploiement de l'image sur **Cloud Run** via `gcloud`/`deploy-cloudrun` |
+
+Différences volontaires par rapport à la référence GitLab : pas de job `lint_code` (le projet est 100 % Java, sans linter Kotlin-style configuré), et le déploiement cible Cloud Run (`google-github-actions/deploy-cloudrun`) plutôt qu'un VPS joint en SSH.
+
+### Mise en place côté GCP (à faire une fois)
+
+```bash
+# Variables à adapter
+export PROJECT_ID="mon-projet-gcp"
+export REGION="europe-west1"
+export SA_NAME="github-actions-deployer"
+
+# 1. Activer les APIs nécessaires
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+  secretmanager.googleapis.com --project "$PROJECT_ID"
+
+# 2. Créer le dépôt Artifact Registry pour les images Docker
+gcloud artifacts repositories create task-manager \
+  --repository-format=docker --location="$REGION" \
+  --description="Images Task Manager" --project "$PROJECT_ID"
+
+# 3. Créer le compte de service utilisé par GitHub Actions
+gcloud iam service-accounts create "$SA_NAME" \
+  --display-name="GitHub Actions - Task Manager" --project "$PROJECT_ID"
+
+SA_EMAIL="$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+
+for ROLE in roles/artifactregistry.writer roles/run.admin roles/iam.serviceAccountUser roles/secretmanager.secretAccessor roles/cloudsql.client; do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:$SA_EMAIL" --role="$ROLE"
+done
+
+# 4a. Authentification par clé JSON (simple, à utiliser pour ce test)
+gcloud iam service-accounts keys create sa-key.json --iam-account="$SA_EMAIL"
+# -> coller le contenu de sa-key.json dans le secret GitHub GCP_SA_KEY, puis supprimer le fichier local.
+
+# 4b. Alternative recommandée en production : Workload Identity Federation (sans clé longue durée)
+# https://github.com/google-github-actions/auth#setting-up-workload-identity-federation
+
+# 5. Secrets applicatifs dans Secret Manager (référencés par le job "deploy")
+echo -n "un-mot-de-passe-fort" | gcloud secrets create DB_PASSWORD --data-file=- --project "$PROJECT_ID"
+echo -n "un-secret-jwt-de-32-caracteres-minimum" | gcloud secrets create JWT_SECRET --data-file=- --project "$PROJECT_ID"
+gcloud secrets add-iam-policy-binding DB_PASSWORD --member="serviceAccount:$SA_EMAIL" --role="roles/secretmanager.secretAccessor"
+gcloud secrets add-iam-policy-binding JWT_SECRET  --member="serviceAccount:$SA_EMAIL" --role="roles/secretmanager.secretAccessor"
+```
+
+### Base de données : Cloud SQL (MySQL)
+
+La base MySQL n'est pas provisionnée par ce pipeline ; elle doit être créée une fois, séparément :
+
+```bash
+export INSTANCE_NAME="task-manager-db"
+
+# 1. Créer l'instance Cloud SQL (MySQL 8.4, la plus petite tier pour un environnement de test)
+gcloud sql instances create "$INSTANCE_NAME" \
+  --database-version=MYSQL_8_4 --tier=db-f1-micro --region="$REGION" \
+  --project "$PROJECT_ID"
+
+# 2. Créer la base et l'utilisateur applicatif
+gcloud sql databases create taskmanager --instance="$INSTANCE_NAME" --project "$PROJECT_ID"
+gcloud sql users create taskuser --instance="$INSTANCE_NAME" --password="un-mot-de-passe-fort" --project "$PROJECT_ID"
+
+# 3. Récupérer le connection name (format PROJECT_ID:REGION:INSTANCE_NAME)
+gcloud sql instances describe "$INSTANCE_NAME" --project "$PROJECT_ID" --format="value(connectionName)"
+```
+
+L'application se connecte à Cloud SQL via le [Cloud SQL Java Connector](https://github.com/GoogleCloudPlatform/cloud-sql-java-connector) (dépendance `mysql-socket-factory-connector-j-8`), activé par le profil Spring `cloud` (`application-cloud.yaml`) — pas d'IP publique à ouvrir, pas de certificat TLS à gérer à la main. Le job `deploy` :
+- active ce profil (`SPRING_PROFILES_ACTIVE=cloud`),
+- passe le connection name via `INSTANCE_CONNECTION_NAME`,
+- monte l'accès à l'instance avec le flag `--add-cloudsql-instances`.
+
+Le compte de service de déploiement doit avoir le rôle `roles/cloudsql.client` (déjà inclus dans la boucle IAM ci-dessus). Ajouter `GCP_CLOUDSQL_INSTANCE` (le connection name récupéré à l'étape 3) aux variables GitHub ci-dessous.
+
+### Secrets et variables GitHub à configurer
+
+Dans **Settings → Secrets and variables → Actions** du dépôt :
+
+**Secrets** (`Repository secrets`)
+| Nom | Contenu |
+|---|---|
+| `GCP_SA_KEY` | Contenu JSON de `sa-key.json` (étape 4a ci-dessus) |
+
+**Variables** (`Repository variables`)
+| Nom | Exemple |
+|---|---|
+| `GCP_PROJECT_ID` | `mon-projet-gcp` |
+| `GCP_REGION` | `europe-west1` |
+| `GCP_CLOUDSQL_INSTANCE` | `mon-projet-gcp:europe-west1:task-manager-db` (connection name de l'instance) |
+| `DB_NAME` | `taskmanager` |
+| `DB_USER` | `taskuser` |
+| `CORS_ALLOWED_ORIGINS` | URL du frontend déployé (ex. `https://task-manager.web.app`) |
+
+`DB_PASSWORD` et `JWT_SECRET` ne sont **pas** des variables/secrets GitHub : ils sont lus directement depuis Secret Manager par Cloud Run au démarrage (`--set-secrets`), pour ne jamais transiter par les logs CI.
+
+### Ce que fait le pipeline à chaque push sur `main`
+
+1. Build + tests (échoue le pipeline si un test casse — le `package`/`deploy` ne se déclenchent pas).
+2. Image Docker construite et poussée sur `${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/task-manager/task-manager-backend`, taguée avec le SHA du commit et `latest`.
+3. Déploiement Cloud Run de cette image précise (traçabilité build → déploiement), service accessible publiquement (`--allow-unauthenticated`), avec `server.port` piloté par la variable `$PORT` que Cloud Run injecte (déjà supporté par `application.yaml`, aucune adaptation nécessaire).
+
+Sur une pull request, seuls les jobs `build` et `test` s'exécutent (validation avant merge, pas de déploiement).
+
 ## Prochaines étapes
 
 - [ ] Frontend React + Vite + TSX (`frontend/`)
 - [ ] Application mobile Flutter (`mobile/`) — bonus
-- [ ] Pipeline CI/CD (GitHub Actions) + déploiement GCP (Cloud Run) — bonus
+- [x] Pipeline CI/CD (GitHub Actions) + déploiement GCP (Cloud Run) — bonus
