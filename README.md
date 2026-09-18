@@ -209,6 +209,16 @@ echo -n "un-mot-de-passe-fort" | gcloud secrets create DB_PASSWORD --data-file=-
 echo -n "un-secret-jwt-de-32-caracteres-minimum" | gcloud secrets create JWT_SECRET --data-file=- --project "$PROJECT_ID"
 gcloud secrets add-iam-policy-binding DB_PASSWORD --member="serviceAccount:$SA_EMAIL" --role="roles/secretmanager.secretAccessor"
 gcloud secrets add-iam-policy-binding JWT_SECRET  --member="serviceAccount:$SA_EMAIL" --role="roles/secretmanager.secretAccessor"
+
+# 6. Le job "deploy" ne passe pas de `service_account:` à deploy-cloudrun@v2 : la révision Cloud Run
+#    tourne donc avec le compte de service Compute Engine par défaut (PROJECT_NUMBER-compute@developer.gserviceaccount.com),
+#    PAS avec $SA_EMAIL (qui ne sert qu'à l'authentification gcloud dans le job, pas à l'exécution du conteneur).
+#    Ce compte par défaut doit donc AUSSI avoir accès aux secrets, sinon la révision échoue au démarrage
+#    avec "Permission denied on secret ... for Revision service account".
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+COMPUTE_SA="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
+gcloud secrets add-iam-policy-binding DB_PASSWORD --member="serviceAccount:$COMPUTE_SA" --role="roles/secretmanager.secretAccessor"
+gcloud secrets add-iam-policy-binding JWT_SECRET  --member="serviceAccount:$COMPUTE_SA" --role="roles/secretmanager.secretAccessor"
 ```
 
 ### Base de données : Cloud SQL (MySQL)
@@ -266,6 +276,11 @@ Dans **Settings → Secrets and variables → Actions** du dépôt :
 3. Déploiement Cloud Run de cette image précise (traçabilité build → déploiement), service accessible publiquement (`--allow-unauthenticated`), avec `server.port` piloté par la variable `$PORT` que Cloud Run injecte (déjà supporté par `application.yaml`, aucune adaptation nécessaire).
 
 Sur une pull request, seuls les jobs `build` et `test` s'exécutent (validation avant merge, pas de déploiement).
+
+### Dépannage
+
+- **Aucun run n'apparaît dans l'onglet Actions, même après un push sur `main`** : sur un dépôt (ou compte GitHub) neuf/non vérifié, GitHub désactive Actions par défaut par mesure anti-abus. Aller sur l'onglet `Actions` du dépôt : s'il affiche *"Workflows aren't being run on this repository"*, cliquer sur **"Enable Actions on this repository"**. Si le bouton renvoie *"Unable to enable Actions for this repository"*, vérifier sur le compte GitHub propriétaire du dépôt : email vérifié, téléphone vérifié, et/ou moyen de paiement renseigné dans `Settings → Billing and plans` (même sans jamais dépasser le quota gratuit, ça débloque souvent l'activation).
+- **Le job `deploy` échoue avec `Permission denied on secret ... for Revision service account ...-compute@developer.gserviceaccount.com`** : voir l'étape 6 de la mise en place GCP ci-dessus — le compte de service Compute Engine par défaut (pas `$SA_EMAIL`) doit aussi avoir `roles/secretmanager.secretAccessor` sur `DB_PASSWORD` et `JWT_SECRET`.
 
 ## Prochaines étapes
 
