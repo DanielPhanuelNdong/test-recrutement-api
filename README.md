@@ -1,6 +1,6 @@
 # Task Manager — Backend (Spring Boot)
 
-API REST pour une mini application de gestion de tâches, réalisée dans le cadre du test de recrutement. Ce dépôt contient pour l'instant le **backend** (`Java 25` + `Spring Boot 4` + `Spring Data JPA` + `MySQL` + `Flyway` + `JWT`). Les dossiers `frontend/` (React + Vite + TSX) et `mobile/` (Flutter) seront ajoutés en tant que sous-projets du même dépôt.
+API REST pour une mini application de gestion de tâches, réalisée dans le cadre du test de recrutement (`Java 25` + `Spring Boot 4` + `Spring Data JPA` + `MySQL` + `Flyway` + `JWT`). Le frontend (React + Vite + TypeScript + Tailwind + Redux Toolkit) vit dans un dépôt séparé : [`recrutement-test-front-web`](../recrutement-test-front-web). Le dossier `mobile/` (Flutter) pourra être ajouté en tant que dépôt séparé du même projet.
 
 ## Sommaire
 
@@ -265,7 +265,7 @@ Dans **Settings → Secrets and variables → Actions** du dépôt :
 | `GCP_CLOUDSQL_INSTANCE` | `mon-projet-gcp:europe-west1:task-manager-db` (connection name de l'instance) |
 | `DB_NAME` | `taskmanager` |
 | `DB_USER` | `taskuser` |
-| `CORS_ALLOWED_ORIGINS` | URL du frontend déployé (ex. `https://task-manager.web.app`) |
+| `CORS_ALLOWED_ORIGINS` | URLs autorisées, séparées par des virgules (ex. `http://localhost:5173,https://task-manager-frontend-646783674843.europe-west1.run.app`) — inclure l'URL Cloud Run du frontend (cf. [`test-recrutement-front-web`](../recrutement-test-front-web)) |
 
 `DB_PASSWORD` et `JWT_SECRET` ne sont **pas** des variables/secrets GitHub : ils sont lus directement depuis Secret Manager par Cloud Run au démarrage (`--set-secrets`), pour ne jamais transiter par les logs CI.
 
@@ -282,8 +282,15 @@ Sur une pull request, seuls les jobs `build` et `test` s'exécutent (validation 
 - **Aucun run n'apparaît dans l'onglet Actions, même après un push sur `main`** : sur un dépôt (ou compte GitHub) neuf/non vérifié, GitHub désactive Actions par défaut par mesure anti-abus. Aller sur l'onglet `Actions` du dépôt : s'il affiche *"Workflows aren't being run on this repository"*, cliquer sur **"Enable Actions on this repository"**. Si le bouton renvoie *"Unable to enable Actions for this repository"*, vérifier sur le compte GitHub propriétaire du dépôt : email vérifié, téléphone vérifié, et/ou moyen de paiement renseigné dans `Settings → Billing and plans` (même sans jamais dépasser le quota gratuit, ça débloque souvent l'activation).
 - **Le job `deploy` échoue avec `Permission denied on secret ... for Revision service account ...-compute@developer.gserviceaccount.com`** : voir l'étape 6 de la mise en place GCP ci-dessus — le compte de service Compute Engine par défaut (pas `$SA_EMAIL`) doit aussi avoir `roles/secretmanager.secretAccessor` sur `DB_PASSWORD` et `JWT_SECRET`.
 
+## Frontend
+
+Le frontend (React 19 + Vite + TypeScript + Tailwind CSS v4 + Redux Toolkit + React Router + Axios) vit dans un dépôt séparé : [`recrutement-test-front-web`](../recrutement-test-front-web). Voir le README de ce dépôt pour l'installation, l'architecture et les choix techniques détaillés.
+
+**CORS** : le backend n'autorise que les origines listées dans la variable d'environnement `CORS_ALLOWED_ORIGINS` (cf. [CI/CD](#cicd-github-actions--gcp-cloud-run) ci-dessus). En local, `http://localhost:5173` est autorisé par défaut (voir `application.yaml`). Pour un frontend déployé (Cloud Run, Firebase Hosting, ...), son URL doit être ajoutée à la variable GitHub `CORS_ALLOWED_ORIGINS`, sans quoi le navigateur bloquera les requêtes malgré un backend fonctionnel.
+
 ## Prochaines étapes
 
-- [ ] Frontend React + Vite + TSX (`frontend/`)
+- [x] Frontend React + Vite + TSX + Redux Toolkit (dépôt séparé [`recrutement-test-front-web`](../recrutement-test-front-web))
+- [x] Dockerfile + CI/CD frontend prêts (dépôt [`test-recrutement-front-web`](../recrutement-test-front-web)) — reste à configurer les secrets/variables GitHub sur ce dépôt et pousser sur `main` pour le premier déploiement effectif ; et à ajouter son URL à la variable `CORS_ALLOWED_ORIGINS` ci-dessus (déjà fait en édition directe sur le service Cloud Run, mais pas encore dans la variable GitHub — sera écrasé au prochain déploiement du backend)
 - [ ] Application mobile Flutter (`mobile/`) — bonus
 - [x] Pipeline CI/CD (GitHub Actions) + déploiement GCP (Cloud Run) — bonus
